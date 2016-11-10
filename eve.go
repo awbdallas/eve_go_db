@@ -2,10 +2,10 @@ package main
 
 import (
 	"database/sql"
-	//	"encoding/json"
-	//	"fmt"
+	"encoding/json"
+	"fmt"
 	_ "github.com/mattn/go-sqlite3"
-	// 	"io/ioutil"
+	"io/ioutil"
 	"os"
 )
 
@@ -18,7 +18,16 @@ func main() {
 		db := InitDB(dbpath)
 		defer db.Close()
 		CreateDB(db)
-		//file, err := ioutil.ReadFile(items_file_path)
+		file, err := ioutil.ReadFile(items_file_path)
+
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+
+		var items []EveItem
+		json.Unmarshal(file, &items)
+		StoreItem(db, items)
 	} else {
 		db := InitDB(dbpath)
 		defer db.Close()
@@ -26,11 +35,11 @@ func main() {
 }
 
 type EveItem struct {
-	Volume   float32
-	TypeID   int
-	GroupID  int
-	Market   bool
-	TypeName string
+	Volume   float32 `json:"volume"`
+	TypeID   int     `json:"typeID"`
+	GroupID  int     `json:"groupID"`
+	Market   bool    `json:"market"`
+	TypeName string  `json:"typeName"`
 }
 
 func InitDB(filepath string) *sql.DB {
@@ -80,7 +89,6 @@ func CreateDB(db *sql.DB) {
 	}
 }
 
-/*
 func StoreItem(db *sql.DB, items []EveItem) {
 	sql_additem := `
 	INSERT OR REPLACE INTO items(
@@ -107,6 +115,7 @@ func StoreItem(db *sql.DB, items []EveItem) {
 	}
 }
 
+/*
 func StoreMarketData(db *sql.DB, items []EveItem) {
 	sql_additem := `
 	INSERT OR REPLACE INTO items(
