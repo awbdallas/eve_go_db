@@ -7,6 +7,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
 	"os"
+	"strconv"
 )
 
 type EveItem struct {
@@ -20,10 +21,10 @@ type EveItem struct {
 func main() {
 	const dbpath = "eve.db"
 	const items_file_path = "types.json"
-
+	var db *sql.DB
 	// Checking for DB before we do anything
 	if _, err := os.Stat(dbpath); os.IsNotExist(err) {
-		db := InitDB(dbpath)
+		db = InitDB(dbpath)
 		defer db.Close()
 		CreateDB(db)
 		file, err := ioutil.ReadFile(items_file_path)
@@ -37,19 +38,38 @@ func main() {
 		json.Unmarshal(file, &items)
 		StoreItem(db, items)
 	} else {
-		db := InitDB(dbpath)
+		db = InitDB(dbpath)
 		defer db.Close()
 	}
+
+	urls := Make_URL(db)
+	// Needed to use it once
+	print(urls[0])
 }
 
-/*
 func Make_URL(db *sql.DB) []string {
 	typeids := Get_Market_Items(db)
-}
-*/
+	default_system := "30000142"
+	base_url := "http://api.eve-central.com/api/marketstat?"
+	var urls []string
 
-/*
-func Get_Market_Items(db *sql.db) *[]int {
+	url := base_url
+	for i := 0; i < len(typeids); i++ {
+		// Eve-central limits to 100 items per query
+		if (i%100 == 0) && (i != 0) {
+			// TODO add CLI or something to figure out what system to grab info
+			// for
+			url += ("usesystem=" + default_system)
+			urls = append(urls, url)
+			url = base_url
+		} else {
+			url += ("typeid=" + strconv.Itoa(typeids[i]) + "&")
+		}
+	}
+	return urls
+}
+
+func Get_Market_Items(db *sql.DB) []int {
 	// SELECT all items that are on the market
 	sql_readall := `
 	SELECT TypeID FROM items
@@ -72,8 +92,9 @@ func Get_Market_Items(db *sql.db) *[]int {
 		}
 		result = append(result, typeid)
 	}
+
+	return result
 }
-*/
 
 func InitDB(filepath string) *sql.DB {
 	db, err := sql.Open("sqlite3", filepath)
