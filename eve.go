@@ -9,6 +9,14 @@ import (
 	"os"
 )
 
+type EveItem struct {
+	Volume   float32 `json:"volume"`
+	TypeID   int     `json:"typeID"`
+	GroupID  int     `json:"groupID"`
+	Market   bool    `json:"market"`
+	TypeName string  `json:"typeName"`
+}
+
 func main() {
 	const dbpath = "eve.db"
 	const items_file_path = "types.json"
@@ -34,13 +42,38 @@ func main() {
 	}
 }
 
-type EveItem struct {
-	Volume   float32 `json:"volume"`
-	TypeID   int     `json:"typeID"`
-	GroupID  int     `json:"groupID"`
-	Market   bool    `json:"market"`
-	TypeName string  `json:"typeName"`
+/*
+func Make_URL(db *sql.DB) []string {
+	typeids := Get_Market_Items(db)
 }
+*/
+
+/*
+func Get_Market_Items(db *sql.db) *[]int {
+	// SELECT all items that are on the market
+	sql_readall := `
+	SELECT TypeID FROM items
+	WHERE Market = 1
+	`
+
+	rows, err := db.Query(sql_readall)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	var result []int
+	for rows.Next() {
+		var typeid int
+		//err2 := rows.Scan(&item.Id, &item.Name, &item.Phone)
+		err2 := rows.Scan(&typeid)
+		if err2 != nil {
+			panic(err2)
+		}
+		result = append(result, typeid)
+	}
+}
+*/
 
 func InitDB(filepath string) *sql.DB {
 	db, err := sql.Open("sqlite3", filepath)
@@ -60,7 +93,7 @@ func CreateDB(db *sql.DB) {
 		TypeID INT NOT NULL PRIMARY KEY,
 		GroupID INT,
 		TypeName TEXT,
-		Volume DOUBLE,
+		Volume INT,
 		Market BOOLEAN
 	);
 	`
@@ -68,8 +101,8 @@ func CreateDB(db *sql.DB) {
 	CREATE TABLE IF NOT EXISTS market_data(
 		TypeID INT NOT NULL PRIMARY KEY,
 		SystemID INT,
-		Min_sell DOUBLE,
-		Max_buy DOUBLE,
+		Min_sell INT,
+		Max_buy INT,
 		Volume_sell INT,
 		Volume_buy INT,
 		date_of_info date default CURRENT_DATE
@@ -89,6 +122,12 @@ func CreateDB(db *sql.DB) {
 	}
 }
 
+/*
+TODO optimize this. Possible do bulk insert
+We're storing it as an int because of issues with float,
+so we're multiplying by 1000 and we'll just have to keep
+the math together
+*/
 func StoreItem(db *sql.DB, items []EveItem) {
 	sql_additem := `
 	INSERT OR REPLACE INTO items(
@@ -108,7 +147,7 @@ func StoreItem(db *sql.DB, items []EveItem) {
 
 	for _, item := range items {
 		_, err2 := stmt.Exec(item.TypeID, item.GroupID, item.TypeName,
-			item.Volume, item.Market)
+			item.Volume*1000, item.Market)
 		if err2 != nil {
 			panic(err2)
 		}
@@ -118,12 +157,14 @@ func StoreItem(db *sql.DB, items []EveItem) {
 /*
 func StoreMarketData(db *sql.DB, items []EveItem) {
 	sql_additem := `
-	INSERT OR REPLACE INTO items(
-		Id,
-		Name,
-		Phone,
-		InsertedDatetime
-	) values(?, ?, ?, CURRENT_TIMESTAMP)
+	INSERT OR REPLACE INTO market_data(
+		TypeID,
+		SystemID,
+		Min_sell,
+		Max_buy,
+		Volume_sell,
+		Volume_buy,
+	) values(?, ?, ?, ?, ?, ?)
 	`
 
 	stmt, err := db.Prepare(sql_additem)
