@@ -3,12 +3,16 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"strconv"
 )
+
+// TODO Clean this Namespace, little too much for me in terms of structs
 
 type EveItem struct {
 	Volume   float32 `json:"volume"`
@@ -16,6 +20,19 @@ type EveItem struct {
 	GroupID  int     `json:"groupID"`
 	Market   bool    `json:"market"`
 	TypeName string  `json:"typeName"`
+}
+
+type Market_Items struct {
+	Items []Market_Item `xml:"marketstat>type"`
+}
+
+type Market_Item struct {
+	Id          int `xml:"id,attr"`
+	SystemID    int
+	Min_sell    float32 `xml:"sell>min"`
+	Max_buy     float32 `xml:"buy>max"`
+	Volume_sell int     `xml:"sell>volume"`
+	Volume_buy  int     `xml:"buy>volume"`
 }
 
 func main() {
@@ -43,8 +60,38 @@ func main() {
 	}
 
 	urls := Make_URL(db)
-	// Needed to use it once
-	print(urls[0])
+	raw_market_info := Get_Market_Info(urls)
+	parsed_market_info := Parse_Market_Info(raw_market_info)
+	Store_Market_Data(db, parsed_market_info)
+
+}
+
+func Parse_Market_Info(market_info []string) []Market_Item {
+	var returning_list []Market_Item
+
+	for i := 0; i < len(market_info); i++ {
+		var items Market_Items
+		b := []byte(market_info[i])
+		xml.Unmarshal(b, &items)
+		for _, item := range items.Items {
+			returning_list = append(returning_list, item)
+		}
+	}
+	return returning_list
+}
+
+func Get_Market_Info(urls []string) []string {
+	var market_info []string
+	for i := 0; i < len(urls); i++ {
+		resp, err := http.Get(urls[i])
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		market_info = append(market_info, string(body))
+	}
+	return market_info
 }
 
 func Make_URL(db *sql.DB) []string {
@@ -175,56 +222,32 @@ func StoreItem(db *sql.DB, items []EveItem) {
 	}
 }
 
-/*
-func StoreMarketData(db *sql.DB, items []EveItem) {
+func Store_Market_Data(db *sql.DB, items []Market_Item) {
 	sql_additem := `
 	INSERT OR REPLACE INTO market_data(
-		TypeID,
+		TypeID, 
 		SystemID,
-		Min_sell,
-		Max_buy,
+		Min_sell, 
+		Max_buy, 
 		Volume_sell,
-		Volume_buy,
+		Volume_buy
 	) values(?, ?, ?, ?, ?, ?)
 	`
 
 	stmt, err := db.Prepare(sql_additem)
+
 	if err != nil {
 		panic(err)
 	}
+
 	defer stmt.Close()
 
 	for _, item := range items {
-		//_, err2 := stmt.Exec(item.Id, item.Name, item.Phone)
-		_, err2 := stmt.Exec(item.TypeID)
+		_, err2 := stmt.Exec(item.Id, `30000142`, (item.Min_sell * 100),
+			(item.Max_buy * 100), item.Volume_sell, item.Volume_buy)
+
 		if err2 != nil {
 			panic(err2)
 		}
 	}
 }
-
-func ReadItem(db *sql.DB) []EveItem {
-	sql_readall := `
-	SELECT Id, Name, Phone FROM items
-	ORDER BY datetime(InsertedDatetime) DESC
-	`
-
-	rows, err := db.Query(sql_readall)
-	if err != nil {
-		panic(err)
-	}
-	defer rows.Close()
-
-	var result []EveItem
-	for rows.Next() {
-		item := EveItem{}
-		//err2 := rows.Scan(&item.Id, &item.Name, &item.Phone)
-		err2 := rows.Scan()
-		if err2 != nil {
-			panic(err2)
-		}
-		result = append(result, item)
-	}
-	return result
-}
-*/
