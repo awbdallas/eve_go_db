@@ -36,9 +36,12 @@ type Market_Item struct {
 }
 
 func main() {
-	const dbpath = "eve.db"
-	const items_file_path = "types.json"
+	// const dbpath = "eve.db"
+	// const items_file_path = "types.json"
+	dbpath := os.Args[1]
+	items_file_path := os.Args[2]
 	var db *sql.DB
+
 	// Checking for DB before we do anything
 	if _, err := os.Stat(dbpath); os.IsNotExist(err) {
 		db = InitDB(dbpath)
@@ -96,7 +99,7 @@ func Get_Market_Info(urls []string) []string {
 
 func Make_URL(db *sql.DB) []string {
 	typeids := Get_Market_Items(db)
-	default_system := "30000142"
+	default_system := "30000263"
 	base_url := "http://api.eve-central.com/api/marketstat?"
 	var urls []string
 
@@ -167,14 +170,14 @@ func CreateDB(db *sql.DB) {
 	`
 	market_table := `
 	CREATE TABLE IF NOT EXISTS market_data(
-		TypeID INT NOT NULL PRIMARY KEY,
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		TypeID INT,
 		SystemID INT,
 		Min_sell INT,
 		Max_buy INT,
 		Volume_sell INT,
 		Volume_buy INT,
-		date_of_info date default CURRENT_DATE
-
+		date_of_info TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	`
 
@@ -243,7 +246,7 @@ func Store_Market_Data(db *sql.DB, items []Market_Item) {
 	defer stmt.Close()
 
 	for _, item := range items {
-		_, err2 := stmt.Exec(item.Id, `30000142`, (item.Min_sell * 100),
+		_, err2 := stmt.Exec(item.Id, `30000263`, (item.Min_sell * 100),
 			(item.Max_buy * 100), item.Volume_sell, item.Volume_buy)
 
 		if err2 != nil {
