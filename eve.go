@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
@@ -55,13 +56,28 @@ type Market_Item struct {
 }
 
 func main() {
-	// TODO Deal with arguments with options just to make it friendly
-	dbpath := os.Args[1]
-	items_file_path := os.Args[2]
+	var dbpath string
+	var items_file_path string
+	var system string
+	flag.StringVar(&dbpath, "dbpath", "Default", "Path to DB")
+	flag.StringVar(&items_file_path, "typepath", "Default", "Path to JSON Files")
+	flag.StringVar(&system, "system", "30000263", "System to query")
+	flag.Parse()
+
+	if dbpath == "Default" {
+		fmt.Println("Need a Path to DB")
+		os.Exit(0)
+	}
 
 	var db *sql.DB
 
 	if _, err := os.Stat(dbpath); os.IsNotExist(err) {
+
+		if items_file_path == "Default" {
+			fmt.Println("Need a path to json file since DB doesn't exist")
+			os.Exit(0)
+		}
+
 		db = InitDB(dbpath)
 		defer db.Close()
 		CreateDB(db)
@@ -80,10 +96,10 @@ func main() {
 		defer db.Close()
 	}
 
-	urls := Make_URL(db)
+	urls := Make_URL(db, system)
 	raw_market_info := Get_Market_Info(urls)
 	parsed_market_info := Parse_Market_Info(raw_market_info)
-	Store_Market_Data(db, parsed_market_info)
+	Store_Market_Data(db, parsed_market_info, system)
 }
 
 /*
@@ -132,20 +148,19 @@ func Get_Market_Info(urls []string) []string {
 
 /*
 * Purpose: Make the URLS for querying
-* Parameters: db pointer
+* Parameters: db pointer, and a value for the system to query
 * Returns: slice of strings that contain the urls
  */
-func Make_URL(db *sql.DB) []string {
+func Make_URL(db *sql.DB, system string) []string {
 	typeids := Get_Market_Items(db)
-	default_system := "30000263"
 	base_url := "http://api.eve-central.com/api/marketstat?"
 	var urls []string
 
 	url := base_url
 	for i, item := range typeids {
-		// Queries limited to 100 at a time
+		// Queries limited to 100 items per query
 		if (i%100 == 0) && (i != 0) {
-			url += ("usesystem=" + default_system)
+			url += ("usesystem=" + system)
 			urls = append(urls, url)
 			url = base_url
 		} else {
@@ -282,16 +297,16 @@ func StoreItem(db *sql.DB, items []EveItem) {
 
 /*
 * Purpose: Take in a slice of Market_Item and store them in the database
-* Retunrs: Nothing
-* Parameters: pointer to DB and slice of struct Market_Item
+* Returns: Nothing
+* Parameters: pointer to DB, slice of struct Market_Items, system to store
  */
-func Store_Market_Data(db *sql.DB, items []Market_Item) {
+func Store_Market_Data(db *sql.DB, items []Market_Item, system string) {
 	sql_additem := `
 	INSERT OR REPLACE INTO market_data(
-		TypeID, 
+		TypeID,
 		SystemID,
-		Min_sell, 
-		Max_buy, 
+		Min_sell,
+		Max_buy,
 		Volume_sell,
 		Volume_buy
 	) values(?, ?, ?, ?, ?, ?)
@@ -306,7 +321,7 @@ func Store_Market_Data(db *sql.DB, items []Market_Item) {
 	defer stmt.Close()
 
 	for _, item := range items {
-		_, err2 := stmt.Exec(item.Id, `30000263`, (item.Min_sell * 100),
+		_, err2 := stmt.Exec(item.Id, system, (item.Min_sell * 100),
 			(item.Max_buy * 100), item.Volume_sell, item.Volume_buy)
 
 		if err2 != nil {
