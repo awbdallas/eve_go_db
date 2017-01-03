@@ -17,8 +17,21 @@ var ITEM_FILE_PATH = `./data/types.json`
 var STATION_FILE_PATH = `./data/station_types.json`
 var DB_PATH = `./data/eve.db`
 
+type EveHistoryItem struct {
+	OrderCount int     `json:"orderCount"`
+	LowPrice   float64 `json:"lowPrice"`
+	HighPrice  float64 `json:"highPrice"`
+	AvgPrice   float64 `json:"AvgPrice"`
+	Volume     int     `json:"volume"`
+	Date       string  `json:"date"`
+}
+
+type EveHistoryRequest struct {
+	Items []EveHistoryItem `json:"items"`
+}
+
 type EveItem struct {
-	Volume   float32 `json:"volume"`
+	Volume   float64 `json:"volume"`
 	TypeID   int     `json:"typeID"`
 	GroupID  int     `json:"groupID"`
 	Market   bool    `json:"market"`
@@ -34,8 +47,8 @@ type StationType struct {
 
 type EveOrder struct {
 	Buy       bool    `json:"buy"`
-	Issued    bool    `json:"buy"`
-	Price     float32 `json:"price"`
+	Issued    string  `json:"issued"`
+	Price     float64 `json:"price"`
 	Volume    int     `json:"volume"`
 	Range     string  `json:"range"`
 	StationID int     `json:"stationID"`
@@ -46,7 +59,7 @@ type EveOrder struct {
 type EveOrderRequest struct {
 	Items      []EveOrder `json:"items"`
 	TotalCount int        `json:"totalCount"`
-	PageCount  int        `json:pageCount`
+	PageCount  int        `json:"pageCount"`
 }
 
 func main() {
@@ -66,6 +79,7 @@ func main() {
 
 	db = InitDB(DB_PATH)
 	PopulateOrdersTable(db, station)
+	PopulateHistoryTable(db, station)
 	defer db.Close()
 }
 
@@ -98,6 +112,54 @@ func PopulateOrdersTable(db *sql.DB, station int) {
 	}
 }
 
+func PopulateHistoryTable(db *sql.DB, station int) {
+	region_id := StationToRegion(db, station)
+	market_items := GetMarketItems(db)
+	endpoint := `https://crest-tq.eveonline.com`
+
+	for _, item := range market_items {
+		var eveorder EveHistoryRequest
+		url := (endpoint + `/market/` + strconv.Itoa(region_id) +
+			`/history/?type=` + endpoint + `/inventory/types/` +
+			strconv.Itoa(item) + `/`)
+		resp, err := http.Get(url)
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		CheckErr(err)
+		err = json.Unmarshal(body, &eveorder)
+		CheckErr(err)
+		StoreEveItemHistory(db, eveorder.Items, item, region_id)
+	}
+}
+
+func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
+	typeID int, regionID int) {
+
+	sql_additem := `
+	INSERT OR REPLACE into market_data(
+	  typeID,
+	  regionID,
+	  orderCount,
+	  lowPrice,
+	  highPrice,
+	  avgPrice,
+	  volume,
+	  date
+	) values(?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	stmt, err := db.Prepare(sql_additem)
+	CheckErr(err)
+	defer stmt.Close()
+
+	for _, item := range orderhistory {
+		_, err := stmt.Exec(typeID, regionID, item.OrderCount,
+			item.LowPrice, item.HighPrice, item.AvgPrice, item.Volume, item.Date)
+		CheckErr(err)
+	}
+
+}
+
 func StoreEveOrders(db *sql.DB, eveorders []EveOrder) {
 	sql_additem := `
 	INSERT OR REPLACE INTO market_orders(
@@ -117,7 +179,7 @@ func StoreEveOrders(db *sql.DB, eveorders []EveOrder) {
 	defer stmt.Close()
 
 	for _, item := range eveorders {
-		_, err := stmt.Exec(item.Issued, item.Buy, item.Price*1000, item.Volume,
+		_, err := stmt.Exec(item.Issued, item.Buy, item.Price, item.Volume,
 			item.Range, item.StationID, item.TypeID, item.Duration)
 		CheckErr(err)
 	}
@@ -175,7 +237,7 @@ func CreateDB(db *sql.DB) {
 		typeID INT NOT NULL PRIMARY KEY,
 		groupID INT,
 		typeName TEXT,
-		volume INT,
+		volume REAL,
 		market BOOLEAN
 	);
 	`
@@ -186,9 +248,9 @@ func CreateDB(db *sql.DB) {
 		typeID INT,
 		regionID INT,
 		orderCount INT,
-		lowPrice INT,
-		highPrice INT,
-		avgPrice INT,
+		lowPrice REAL,
+		highPrice REAL,
+		avgPrice REAL,
 		volume INT,
 		date DATE
 	);
@@ -206,9 +268,9 @@ func CreateDB(db *sql.DB) {
 	market_orders := `
 	CREATE TABLE IF NOT EXISTS market_orders(
 	  id INTEGER PRIMARY KEY AUTOINCREMENT,
-	  issued TEXT,
+	  issued DATETIME,
 	  buy BOOLEARN,
-	  price INT,
+	  price REAL,
 	  volume INT,
 	  stationID INT,
 	  range TEXT,
@@ -252,7 +314,7 @@ func PopulateItemTable(db *sql.DB) {
 
 	for _, item := range items {
 		_, err := stmt.Exec(item.TypeID, item.GroupID, item.TypeName,
-			item.Volume*1000, item.Market)
+			item.Volume, item.Market)
 		CheckErr(err)
 	}
 }
