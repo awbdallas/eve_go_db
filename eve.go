@@ -7,15 +7,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"os"
 	"strconv"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/lib/pq"
 )
 
 var ITEM_FILE_PATH = `./data/types.json`
 var STATION_FILE_PATH = `./data/station_types.json`
-var DB_PATH = `./data/eve.db`
 
 type EveHistoryItem struct {
 	OrderCount int     `json:"orderCount"`
@@ -63,32 +61,28 @@ type EveOrderRequest struct {
 }
 
 func main() {
-	var station int
-	flag.IntVar(&station, "station", 60003760, "Station ID to pull info for")
+	var region int
+	flag.IntVar(&region, "region", 10000002, "Region to Pull info for")
 	flag.Parse()
 
 	var db *sql.DB
 
-	if _, err := os.Stat(DB_PATH); os.IsNotExist(err) {
-		db = InitDB(DB_PATH)
-		defer db.Close()
-		CreateDB(db)
-		PopulateItemTable(db)
-		PopulateStationTable(db)
-	}
-
-	db = InitDB(DB_PATH)
-	PopulateOrdersTable(db, station)
-	PopulateHistoryTable(db, station)
+	db = InitDB()
+	CreateDB(db)
+	PopulateItemTable(db)
+	PopulateStationTable(db)
+	PopulateOrdersTable(db, region)
+	PopulateHistoryTable(db, region)
 	defer db.Close()
 }
 
-func PopulateOrdersTable(db *sql.DB, station int) {
+func PopulateOrdersTable(db *sql.DB, region_id int) {
 	var eveorder EveOrderRequest
-	region_id := StationToRegion(db, station)
 	url := `https://crest-tq.eveonline.com/market/` + strconv.Itoa(region_id) + `/orders/all/`
 	curr_page_count := 1
 	total_page_count := 1
+
+	ClearOrdersTable(db)
 
 	resp, err := http.Get(url)
 	CheckErr(err)
@@ -112,10 +106,21 @@ func PopulateOrdersTable(db *sql.DB, station int) {
 	}
 }
 
-func PopulateHistoryTable(db *sql.DB, station int) {
-	region_id := StationToRegion(db, station)
+func ClearOrdersTable(db *sql.DB) {
+	_, err := db.Exec("TRUNCATE market_orders;")
+	CheckErr(err)
+}
+
+func ClearHistoryTable(db *sql.DB) {
+	_, err := db.Exec("TRUNCATE market_data;")
+	CheckErr(err)
+}
+
+func PopulateHistoryTable(db *sql.DB, region_id int) {
 	market_items := GetMarketItems(db)
 	endpoint := `https://crest-tq.eveonline.com`
+
+	ClearHistoryTable(db)
 
 	for _, item := range market_items {
 		var eveorder EveHistoryRequest
@@ -135,22 +140,12 @@ func PopulateHistoryTable(db *sql.DB, station int) {
 func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 	typeID int, regionID int) {
 
-	sql_additem := `
-	INSERT OR REPLACE into market_data(
-	  typeID,
-	  regionID,
-	  orderCount,
-	  lowPrice,
-	  highPrice,
-	  avgPrice,
-	  volume,
-	  date
-	) values(?, ?, ?, ?, ?, ?, ?, ?)
-	`
-
-	stmt, err := db.Prepare(sql_additem)
+	txn, err := db.Begin()
 	CheckErr(err)
-	defer stmt.Close()
+
+	stmt, err := txn.Prepare(pq.CopyIn("market_data", "typeid", "regionid",
+		"ordercount", "lowprice", "highprice", "avgprice", "volume", "date"))
+	CheckErr(err)
 
 	for _, item := range orderhistory {
 		_, err := stmt.Exec(typeID, regionID, item.OrderCount,
@@ -158,42 +153,48 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 		CheckErr(err)
 	}
 
+	_, err = stmt.Exec()
+	CheckErr(err)
+
+	err = stmt.Close()
+	CheckErr(err)
+
+	err = txn.Commit()
+	CheckErr(err)
+
 }
 
 func StoreEveOrders(db *sql.DB, eveorders []EveOrder) {
-	sql_additem := `
-	INSERT OR REPLACE INTO market_orders(
-	  issued,
-	  buy,
-	  price,
-	  volume,
-	  range,
-	  stationID,
-	  typeID,
-	  duration
-	) values(?, ?, ?, ?, ?, ?, ?, ?)
-	`
 
-	stmt, err := db.Prepare(sql_additem)
+	txn, err := db.Begin()
 	CheckErr(err)
-	defer stmt.Close()
+
+	stmt, err := txn.Prepare(pq.CopyIn("market_orders", "issued", "buy",
+		"price", "volume", "stationid", "range", "duration", "typeid"))
+	CheckErr(err)
 
 	for _, item := range eveorders {
 		_, err := stmt.Exec(item.Issued, item.Buy, item.Price, item.Volume,
-			item.Range, item.StationID, item.TypeID, item.Duration)
+			item.StationID, item.Range, item.TypeID, item.Duration)
 		CheckErr(err)
 	}
+
+	_, err = stmt.Exec()
+	CheckErr(err)
+
+	err = stmt.Close()
+	CheckErr(err)
+
+	err = txn.Commit()
+	CheckErr(err)
 
 }
 
 func StationToRegion(db *sql.DB, station int) int {
-	sql_get_station_region := `
-	SELECT regionID FROM stations
-	WHERE stationID = ?;
-	`
 	var regionID int
 
-	err := db.QueryRow(sql_get_station_region, station).Scan(&regionID)
+	err := db.QueryRow("SELECT regionid FROM stations WHERE stationid = $1",
+		station).Scan(&regionID)
 	CheckErr(err)
 
 	return regionID
@@ -203,7 +204,7 @@ func GetMarketItems(db *sql.DB) []int {
 	// SELECT all items that are on the market
 	sql_get_market_items := `
 	SELECT TypeID FROM items
-	WHERE Market = 1
+	WHERE Market = 'True'
 	`
 
 	rows, err := db.Query(sql_get_market_items)
@@ -221,8 +222,8 @@ func GetMarketItems(db *sql.DB) []int {
 	return result
 }
 
-func InitDB(filepath string) *sql.DB {
-	db, err := sql.Open("sqlite3", filepath)
+func InitDB() *sql.DB {
+	db, err := sql.Open("postgres", "user=awbriggs dbname=eve_market_data")
 	CheckErr(err)
 	if db == nil {
 		panic("db nil")
@@ -244,38 +245,38 @@ func CreateDB(db *sql.DB) {
 
 	item_history_table := `
 	CREATE TABLE IF NOT EXISTS market_data(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		typeID INT,
-		regionID INT,
-		orderCount INT,
-		lowPrice REAL,
-		highPrice REAL,
-		avgPrice REAL,
-		volume INT,
+		id SERIAL PRIMARY KEY,
+		typeid INT,
+		regionid INT,
+		ordercount INT,
+		lowprice REAL,
+		highprice REAL,
+		avgprice REAL,
+		volume BIGINT,
 		date DATE
 	);
 	`
 
 	station_table := `
 	CREATE TABLE IF NOT EXISTS stations(
-	  stationID INT NOT NULL PRIMARY KEY,
-	  regionID INT,
-	  solarSystemID INT,
-	  stationName TEXT
+	  stationid INT NOT NULL PRIMARY KEY,
+	  regionid INT,
+	  solarsystemid INT,
+	  stationname TEXT
 	);	
 	`
 
 	market_orders := `
 	CREATE TABLE IF NOT EXISTS market_orders(
-	  id INTEGER PRIMARY KEY AUTOINCREMENT,
-	  issued DATETIME,
-	  buy BOOLEARN,
+	  id SERIAL PRIMARY KEY,
+	  issued TIMESTAMP,
+	  buy BOOLEAN,
 	  price REAL,
-	  volume INT,
-	  stationID INT,
+	  volume BIGINT,
+	  stationid BIGINT,
 	  range TEXT,
 	  duration INT,
-	  typeID INT
+	  typeid INT
 	);
 	`
 
@@ -298,25 +299,27 @@ func PopulateItemTable(db *sql.DB) {
 	var items []EveItem
 	json.Unmarshal(file, &items)
 
-	sql_additem := `
-	INSERT OR REPLACE INTO items(
-		typeID,
-		groupID,
-		typeName,
-		volume,
-		market
-	) values(?, ?, ?, ?, ?)
-	`
-
-	stmt, err := db.Prepare(sql_additem)
+	txn, err := db.Begin()
 	CheckErr(err)
-	defer stmt.Close()
+
+	stmt, err := txn.Prepare(pq.CopyIn("items", "typeid", "groupid", "typename",
+		"volume", "market"))
+	CheckErr(err)
 
 	for _, item := range items {
 		_, err := stmt.Exec(item.TypeID, item.GroupID, item.TypeName,
 			item.Volume, item.Market)
 		CheckErr(err)
 	}
+
+	_, err = stmt.Exec()
+	CheckErr(err)
+
+	err = stmt.Close()
+	CheckErr(err)
+
+	err = txn.Commit()
+	CheckErr(err)
 }
 
 func PopulateStationTable(db *sql.DB) {
@@ -327,16 +330,11 @@ func PopulateStationTable(db *sql.DB) {
 	var stations []StationType
 	json.Unmarshal(file, &stations)
 
-	sql_additem := `
-	INSERT OR REPLACE INTO stations(
-	  stationID,
-	  regionID,
-	  solarSystemID,
-	  stationName
-	) values(?, ?, ?, ?)
-	`
+	txn, err := db.Begin()
+	CheckErr(err)
 
-	stmt, err := db.Prepare(sql_additem)
+	stmt, err := txn.Prepare(pq.CopyIn("stations", "stationid", "regionid",
+		"solarsystemid", "stationname"))
 	CheckErr(err)
 	defer stmt.Close()
 
@@ -345,6 +343,15 @@ func PopulateStationTable(db *sql.DB) {
 			station.SolarSystemID, station.StationName)
 		CheckErr(err)
 	}
+
+	_, err = stmt.Exec()
+	CheckErr(err)
+
+	err = stmt.Close()
+	CheckErr(err)
+
+	err = txn.Commit()
+	CheckErr(err)
 }
 
 func CheckErr(err error) {
