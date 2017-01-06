@@ -1,0 +1,10 @@
+GENERAL PERFORMANCE IMPORVEMENTS
+So, super big problem. The query from crest actually returns something like 500 days of data for price history. At the moment I just drop all of them and repopulate the table with all the new order history. At the current moment, that ends up being roughly ~2.7 million rows. Since the plan is to run this ever 4 or so hours to keep the data kinda up to date I think the best thing to do would grab the last date form the column, and just get the data points missing. Not entirely sure how to do that. 
+
+SECURITY ISSUES
+Postgres's user (awbriggs) is set with a superuser and no password since I have that set as a local machines. I've never dealt with deploying before, so it will have to be investigated for what's best practice.
+
+FEATURES
+Switch to ESI endpoints for data. 
+Add Support for data for more than one region.
+Docket? Not something I've messed with, but it might make it a little easier to work with this.

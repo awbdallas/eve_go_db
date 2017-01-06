@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -68,12 +67,12 @@ func main() {
 	var db *sql.DB
 
 	db = InitDB()
+	defer db.Close()
 	CreateDB(db)
 	PopulateItemTable(db)
 	PopulateStationTable(db)
 	PopulateOrdersTable(db, region)
 	PopulateHistoryTable(db, region)
-	defer db.Close()
 }
 
 func PopulateOrdersTable(db *sql.DB, region_id int) {
@@ -143,8 +142,12 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 	txn, err := db.Begin()
 	CheckErr(err)
 
-	stmt, err := txn.Prepare(pq.CopyIn("market_data", "typeid", "regionid",
-		"ordercount", "lowprice", "highprice", "avgprice", "volume", "date"))
+	insert_statement := `
+	INSERT INTO market_data (typeid, regionid, ordercount, lowprice, highprice, avgprice, volume, date)
+	  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	  ON CONFLICT ON CONSTRAINT unique_typeid_date DO NOTHING;
+	`
+	stmt, err := txn.Prepare(insert_statement)
 	CheckErr(err)
 
 	for _, item := range orderhistory {
@@ -152,9 +155,6 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 			item.LowPrice, item.HighPrice, item.AvgPrice, item.Volume, item.Date)
 		CheckErr(err)
 	}
-
-	_, err = stmt.Exec()
-	CheckErr(err)
 
 	err = stmt.Close()
 	CheckErr(err)
@@ -223,7 +223,11 @@ func GetMarketItems(db *sql.DB) []int {
 }
 
 func InitDB() *sql.DB {
-	db, err := sql.Open("postgres", "user=awbriggs dbname=eve_market_data")
+	user := os.Getenv("POSTGRES_USER")
+	db_name := os.Getenv("POSTGRES_DBNAME")
+
+	db, err := sql.Open("postgres", fmt.Sprintf("user=%s dbname=%s",
+		user, db_name))
 	CheckErr(err)
 	if db == nil {
 		panic("db nil")
@@ -235,9 +239,9 @@ func CreateDB(db *sql.DB) {
 
 	item_table := `
 	CREATE TABLE IF NOT EXISTS items(
-		typeID INT NOT NULL PRIMARY KEY,
-		groupID INT,
-		typeName TEXT,
+		typeid INT NOT NULL PRIMARY KEY,
+		groupid INT,
+		typename TEXT,
 		volume REAL,
 		market BOOLEAN
 	);
@@ -253,7 +257,8 @@ func CreateDB(db *sql.DB) {
 		highprice REAL,
 		avgprice REAL,
 		volume BIGINT,
-		date DATE
+		date DATE,
+		CONSTRAINT unique_typeid_date UNIQUE(typeid, date)
 	);
 	`
 
@@ -293,6 +298,12 @@ func CreateDB(db *sql.DB) {
 
 func PopulateItemTable(db *sql.DB) {
 
+	add_item_no_conflict := `
+	INSERT INTO items (typeid, groupid, typename, volume, market)
+	  VALUES ($1, $2, $3, $4, $5)
+	  ON CONFLICT (typeid) DO NOTHING;
+	`
+
 	file, err := ioutil.ReadFile(ITEM_FILE_PATH)
 	CheckErr(err)
 
@@ -302,8 +313,7 @@ func PopulateItemTable(db *sql.DB) {
 	txn, err := db.Begin()
 	CheckErr(err)
 
-	stmt, err := txn.Prepare(pq.CopyIn("items", "typeid", "groupid", "typename",
-		"volume", "market"))
+	stmt, err := txn.Prepare(add_item_no_conflict)
 	CheckErr(err)
 
 	for _, item := range items {
@@ -311,9 +321,6 @@ func PopulateItemTable(db *sql.DB) {
 			item.Volume, item.Market)
 		CheckErr(err)
 	}
-
-	_, err = stmt.Exec()
-	CheckErr(err)
 
 	err = stmt.Close()
 	CheckErr(err)
@@ -324,6 +331,12 @@ func PopulateItemTable(db *sql.DB) {
 
 func PopulateStationTable(db *sql.DB) {
 
+	add_station_no_conflict := `
+	INSERT INTO stations (stationid, regionid, solarsystemid, stationname)
+	  VALUES ($1, $2, $3, $4)
+	  ON CONFLICT (stationid) DO NOTHING;
+	`
+
 	file, err := ioutil.ReadFile(STATION_FILE_PATH)
 	CheckErr(err)
 
@@ -333,8 +346,7 @@ func PopulateStationTable(db *sql.DB) {
 	txn, err := db.Begin()
 	CheckErr(err)
 
-	stmt, err := txn.Prepare(pq.CopyIn("stations", "stationid", "regionid",
-		"solarsystemid", "stationname"))
+	stmt, err := txn.Prepare(add_station_no_conflict)
 	CheckErr(err)
 	defer stmt.Close()
 
@@ -343,9 +355,6 @@ func PopulateStationTable(db *sql.DB) {
 			station.SolarSystemID, station.StationName)
 		CheckErr(err)
 	}
-
-	_, err = stmt.Exec()
-	CheckErr(err)
 
 	err = stmt.Close()
 	CheckErr(err)
@@ -356,7 +365,6 @@ func PopulateStationTable(db *sql.DB) {
 
 func CheckErr(err error) {
 	if err != nil {
-		fmt.Println(err.Error())
 		panic(err)
 	}
 }
