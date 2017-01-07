@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/lib/pq"
@@ -21,6 +23,13 @@ type EveHistoryItem struct {
 	AvgPrice   float64 `json:"AvgPrice"`
 	Volume     int     `json:"volume"`
 	Date       string  `json:"date"`
+}
+
+type HistoryRequest struct {
+	url      string
+	RegionID int
+	TypeID   int
+	result   EveHistoryRequest
 }
 
 type EveHistoryRequest struct {
@@ -110,34 +119,76 @@ func ClearOrdersTable(db *sql.DB) {
 	CheckErr(err)
 }
 
-func ClearHistoryTable(db *sql.DB) {
-	_, err := db.Exec("TRUNCATE market_data;")
-	CheckErr(err)
-}
-
 func PopulateHistoryTable(db *sql.DB, region_id int) {
 	market_items := GetMarketItems(db)
 	endpoint := `https://crest-tq.eveonline.com`
 
-	ClearHistoryTable(db)
+	requests := make([]HistoryRequest, len(market_items))
 
-	for _, item := range market_items {
-		var eveorder EveHistoryRequest
-		url := (endpoint + `/market/` + strconv.Itoa(region_id) +
+	for index, item := range market_items {
+		var request HistoryRequest
+		request.url = (endpoint + `/market/` + strconv.Itoa(region_id) +
 			`/history/?type=` + endpoint + `/inventory/types/` +
 			strconv.Itoa(item) + `/`)
-		resp, err := http.Get(url)
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-		CheckErr(err)
-		err = json.Unmarshal(body, &eveorder)
-		CheckErr(err)
-		StoreEveItemHistory(db, eveorder.Items, item, region_id)
+		request.RegionID = region_id
+		request.TypeID = item
+		requests[index] = request
 	}
+
+	jobs := make(chan HistoryRequest, len(market_items))
+	results := make(chan HistoryRequest, len(market_items))
+
+	for w := 1; w <= 50; w++ {
+		go HistoryWorker(w, jobs, results)
+	}
+
+	for _, request := range requests {
+		jobs <- request
+	}
+	close(jobs)
+
+	for i := 1; i <= len(market_items); i++ {
+		request := <-results
+		StoreEveItemHistory(db, request.result.Items, request.TypeID,
+			request.RegionID)
+	}
+}
+
+/*
+* Grabbed from: https://gobyexample.com/worker-pools
+ */
+func HistoryWorker(id int, jobs <-chan HistoryRequest, results chan<- HistoryRequest) {
+	for job := range jobs {
+		results <- ItemHistoryRequest(job)
+	}
+}
+
+func ItemHistoryRequest(request HistoryRequest) HistoryRequest {
+	resp, err := http.Get(request.url)
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	CheckErr(err)
+	err = json.Unmarshal(body, &request.result)
+	CheckErr(err)
+	return request
 }
 
 func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 	typeID int, regionID int) {
+
+	var amount_of_days sql.NullInt64
+
+	err := db.QueryRow(
+		"SELECT current_date - max(date) FROM market_data WHERE typeid = $1",
+		typeID).Scan(&amount_of_days)
+	CheckErr(err)
+	if amount_of_days.Valid {
+		days_to_get := len(orderhistory) - int(amount_of_days.Int64) + 1
+		if days_to_get >= 0 {
+			orderhistory = orderhistory[days_to_get:]
+		}
+		CheckErr(err)
+	}
 
 	txn, err := db.Begin()
 	CheckErr(err)
@@ -161,7 +212,6 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 
 	err = txn.Commit()
 	CheckErr(err)
-
 }
 
 func StoreEveOrders(db *sql.DB, eveorders []EveOrder) {
