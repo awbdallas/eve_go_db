@@ -90,7 +90,7 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 	curr_page_count := 1
 	total_page_count := 1
 
-	ClearOrdersTable(db)
+	ClearOrdersTable(db, region_id)
 
 	resp, err := http.Get(url)
 	CheckErr(err)
@@ -99,7 +99,7 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 	err = json.Unmarshal(body, &eveorder)
 	CheckErr(err)
 	total_page_count = eveorder.PageCount
-	StoreEveOrders(db, eveorder.Items)
+	StoreEveOrders(db, eveorder.Items, region_id)
 	curr_page_count += 1
 
 	for curr_page_count <= total_page_count {
@@ -109,13 +109,13 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 		CheckErr(err)
 		err = json.Unmarshal(body, &eveorder)
 		CheckErr(err)
-		StoreEveOrders(db, eveorder.Items)
+		StoreEveOrders(db, eveorder.Items, region_id)
 		curr_page_count += 1
 	}
 }
 
-func ClearOrdersTable(db *sql.DB) {
-	_, err := db.Exec("TRUNCATE market_orders;")
+func ClearOrdersTable(db *sql.DB, region_id int) {
+	_, err := db.Exec("DELETE FROM  market_orders WHERE regionid = $1", region_id)
 	CheckErr(err)
 }
 
@@ -179,8 +179,8 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 	var amount_of_days sql.NullInt64
 
 	err := db.QueryRow(
-		"SELECT current_date - max(date) FROM market_data WHERE typeid = $1",
-		typeID).Scan(&amount_of_days)
+		"SELECT current_date - max(date) FROM market_data WHERE typeid = $1 AND regionid = $2",
+		typeID, regionID).Scan(&amount_of_days)
 	CheckErr(err)
 	if amount_of_days.Valid {
 		days_to_get := len(orderhistory) - int(amount_of_days.Int64) + 1
@@ -214,18 +214,18 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 	CheckErr(err)
 }
 
-func StoreEveOrders(db *sql.DB, eveorders []EveOrder) {
+func StoreEveOrders(db *sql.DB, eveorders []EveOrder, region_id int) {
 
 	txn, err := db.Begin()
 	CheckErr(err)
 
 	stmt, err := txn.Prepare(pq.CopyIn("market_orders", "issued", "buy",
-		"price", "volume", "stationid", "range", "duration", "typeid"))
+		"price", "volume", "stationid", "range", "duration", "typeid", "regionid"))
 	CheckErr(err)
 
 	for _, item := range eveorders {
 		_, err := stmt.Exec(item.Issued, item.Buy, item.Price, item.Volume,
-			item.StationID, item.Range, item.TypeID, item.Duration)
+			item.StationID, item.Range, item.TypeID, item.Duration, region_id)
 		CheckErr(err)
 	}
 
@@ -308,7 +308,7 @@ func CreateDB(db *sql.DB) {
 		avgprice REAL,
 		volume BIGINT,
 		date DATE,
-		CONSTRAINT unique_typeid_date UNIQUE(typeid, date)
+		CONSTRAINT unique_typeid_date UNIQUE(typeid, date, regionid)
 	);
 	`
 
@@ -331,7 +331,8 @@ func CreateDB(db *sql.DB) {
 	  stationid BIGINT,
 	  range TEXT,
 	  duration INT,
-	  typeid INT
+	  typeid INT,
+	  regionid BIGINT
 	);
 	`
 
