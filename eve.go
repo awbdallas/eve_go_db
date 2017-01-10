@@ -13,8 +13,8 @@ import (
 	"github.com/lib/pq"
 )
 
-var ITEM_FILE_PATH = `./data/types.json`
-var STATION_FILE_PATH = `./data/station_types.json`
+var ITEM_FILE_PATH = `/var/tmp/eve_db_data/types.json`
+var STATION_FILE_PATH = `/var/tmp/eve_db_data/station_types.json`
 
 type EveHistoryItem struct {
 	OrderCount int     `json:"orderCount"`
@@ -275,9 +275,10 @@ func GetMarketItems(db *sql.DB) []int {
 func InitDB() *sql.DB {
 	user := os.Getenv("POSTGRES_USER")
 	db_name := os.Getenv("POSTGRES_DBNAME")
+	passwd := os.Getenv("POSTGRES_DBNAME")
 
-	db, err := sql.Open("postgres", fmt.Sprintf("user=%s dbname=%s",
-		user, db_name))
+	db, err := sql.Open("postgres", fmt.Sprintf("user=%s dbname=%s password=%s",
+		user, db_name, passwd))
 	CheckErr(err)
 	if db == nil {
 		panic("db nil")
