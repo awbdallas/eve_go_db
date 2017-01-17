@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -69,9 +68,6 @@ type EveOrderRequest struct {
 }
 
 func main() {
-	var region int
-	flag.IntVar(&region, "region", 10000002, "Region to Pull info for")
-	flag.Parse()
 
 	var db *sql.DB
 
@@ -80,8 +76,35 @@ func main() {
 	CreateDB(db)
 	PopulateItemTable(db)
 	PopulateStationTable(db)
-	PopulateOrdersTable(db, region)
-	PopulateHistoryTable(db, region)
+	regions := GetAllRegions(db)
+
+	for {
+		for _, region := range regions {
+			PopulateOrdersTable(db, region)
+			PopulateHistoryTable(db, region)
+		}
+	}
+}
+
+func GetAllRegions(db *sql.DB) []int {
+	var regionids []int
+
+	all_region_sql := `
+	SELECT DISTINCT regionid FROM stations
+	`
+	rows, err := db.Query(all_region_sql)
+	CheckErr(err)
+	defer rows.Close()
+
+	for rows.Next() {
+		var regionid int
+		err = rows.Scan(&regionid)
+		CheckErr(err)
+		regionids = append(regionids, regionid)
+	}
+
+	return regionids
+
 }
 
 func PopulateOrdersTable(db *sql.DB, region_id int) {
@@ -138,7 +161,7 @@ func PopulateHistoryTable(db *sql.DB, region_id int) {
 	jobs := make(chan HistoryRequest, len(market_items))
 	results := make(chan HistoryRequest, len(market_items))
 
-	for w := 1; w <= 50; w++ {
+	for w := 1; w <= 25; w++ {
 		go HistoryWorker(w, jobs, results)
 	}
 
@@ -183,7 +206,7 @@ func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
 		typeID, regionID).Scan(&amount_of_days)
 	CheckErr(err)
 	if amount_of_days.Valid {
-		days_to_get := len(orderhistory) - int(amount_of_days.Int64) + 1
+		days_to_get := len(orderhistory) - int(amount_of_days.Int64)
 		if days_to_get >= 0 {
 			orderhistory = orderhistory[days_to_get:]
 		}
@@ -275,7 +298,7 @@ func GetMarketItems(db *sql.DB) []int {
 func InitDB() *sql.DB {
 	user := os.Getenv("POSTGRES_USER")
 	db_name := os.Getenv("POSTGRES_DBNAME")
-	passwd := os.Getenv("POSTGRES_DBNAME")
+	passwd := os.Getenv("POSTGRES_PASSWORD")
 
 	db, err := sql.Open("postgres", fmt.Sprintf("user=%s dbname=%s password=%s",
 		user, db_name, passwd))
