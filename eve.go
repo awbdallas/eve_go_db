@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -28,6 +29,7 @@ type HistoryRequest struct {
 	url      string
 	RegionID int
 	TypeID   int
+	success  bool
 	result   EveHistoryRequest
 }
 
@@ -82,7 +84,9 @@ func main() {
 		for _, region := range regions {
 			PopulateOrdersTable(db, region)
 			PopulateHistoryTable(db, region)
+			time.Sleep(300 * time.Second)
 		}
+
 	}
 }
 
@@ -115,25 +119,43 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 
 	ClearOrdersTable(db, region_id)
 
-	resp, err := http.Get(url)
-	CheckErr(err)
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	err = json.Unmarshal(body, &eveorder)
-	CheckErr(err)
-	total_page_count = eveorder.PageCount
-	StoreEveOrders(db, eveorder.Items, region_id)
-	curr_page_count += 1
+	timeout := time.Duration(30 * time.Second)
+	client := http.Client{
+		Timeout: timeout,
+	}
 
-	for curr_page_count <= total_page_count {
-		resp, err = http.Get(url + `?page=` + strconv.Itoa(curr_page_count))
+	for i := 1; i <= 5; i++ {
+		resp, err := client.Get(url)
+		if err != nil {
+			if i == 5 {
+				return
+			} else {
+				continue
+			}
+		}
 		defer resp.Body.Close()
-		body, err = ioutil.ReadAll(resp.Body)
-		CheckErr(err)
+		body, err := ioutil.ReadAll(resp.Body)
 		err = json.Unmarshal(body, &eveorder)
 		CheckErr(err)
+		total_page_count = eveorder.PageCount
 		StoreEveOrders(db, eveorder.Items, region_id)
 		curr_page_count += 1
+	}
+
+	for curr_page_count <= total_page_count {
+		for i := 1; i <= 5; i++ {
+			resp, err := client.Get(url + `?page=` + strconv.Itoa(curr_page_count))
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
+			body, err := ioutil.ReadAll(resp.Body)
+			CheckErr(err)
+			err = json.Unmarshal(body, &eveorder)
+			CheckErr(err)
+			StoreEveOrders(db, eveorder.Items, region_id)
+			curr_page_count += 1
+		}
 	}
 }
 
@@ -172,8 +194,10 @@ func PopulateHistoryTable(db *sql.DB, region_id int) {
 
 	for i := 1; i <= len(market_items); i++ {
 		request := <-results
-		StoreEveItemHistory(db, request.result.Items, request.TypeID,
-			request.RegionID)
+		if request.success == true {
+			StoreEveItemHistory(db, request.result.Items, request.TypeID,
+				request.RegionID)
+		}
 	}
 }
 
@@ -187,13 +211,23 @@ func HistoryWorker(id int, jobs <-chan HistoryRequest, results chan<- HistoryReq
 }
 
 func ItemHistoryRequest(request HistoryRequest) HistoryRequest {
-	resp, err := http.Get(request.url)
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	CheckErr(err)
-	err = json.Unmarshal(body, &request.result)
-	CheckErr(err)
+	for i := 1; i <= 5; i++ {
+		resp, err := http.Get(request.url)
+		if err != nil {
+			continue
+		}
+		request.success = true
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		CheckErr(err)
+		err = json.Unmarshal(body, &request.result)
+		CheckErr(err)
+		return request
+	}
+
+	request.success = false
 	return request
+
 }
 
 func StoreEveItemHistory(db *sql.DB, orderhistory []EveHistoryItem,
@@ -243,7 +277,7 @@ func StoreEveOrders(db *sql.DB, eveorders []EveOrder, region_id int) {
 	CheckErr(err)
 
 	stmt, err := txn.Prepare(pq.CopyIn("market_orders", "issued", "buy",
-		"price", "volume", "stationid", "range", "duration", "typeid", "regionid"))
+		"price", "volume", "stationid", "range", "typeid", "duration", "regionid"))
 	CheckErr(err)
 
 	for _, item := range eveorders {
