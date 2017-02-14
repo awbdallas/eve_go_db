@@ -1,7 +1,8 @@
 GENERAL PERFORMANCE IMPORVEMENTS
+More error handling. 
 
 SECURITY ISSUES
 
 FEATURES
 Switch to ESI endpoints for data. 
-Docket? Not something I've messed with, but it might make it a little easier to work with this.
+Pulling a station list in the future when citadels are able to be queried

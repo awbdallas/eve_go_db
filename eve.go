@@ -78,15 +78,21 @@ func main() {
 	CreateDB(db)
 	PopulateItemTable(db)
 	PopulateStationTable(db)
-	regions := GetAllRegions(db)
+	regions := []int{
+		10000043, // Amarr
+		10000002, // Jita
+		10000030, // Rens
+		10000042, // Hek
+		10000039, // Esoteria
+	}
 
 	for {
 		for _, region := range regions {
 			PopulateOrdersTable(db, region)
 			PopulateHistoryTable(db, region)
-			time.Sleep(300 * time.Second)
-		}
 
+		}
+		time.Sleep(3 * time.Hour)
 	}
 }
 
@@ -124,38 +130,32 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 		Timeout: timeout,
 	}
 
-	for i := 1; i <= 5; i++ {
+	for curr_page_count <= total_page_count {
+		if curr_page_count != 1 {
+			url = url + `?page=` + strconv.Itoa(curr_page_count)
+		}
+
 		resp, err := client.Get(url)
 		if err != nil {
-			if i == 5 {
-				return
-			} else {
-				continue
+			for i := 1; i <= 5; i++ {
+				resp, err = client.Get(url)
+				if err != nil {
+					if i == 5 {
+						return
+					} else {
+						continue
+					}
+				}
 			}
 		}
 		defer resp.Body.Close()
+
 		body, err := ioutil.ReadAll(resp.Body)
 		err = json.Unmarshal(body, &eveorder)
 		CheckErr(err)
 		total_page_count = eveorder.PageCount
 		StoreEveOrders(db, eveorder.Items, region_id)
 		curr_page_count += 1
-	}
-
-	for curr_page_count <= total_page_count {
-		for i := 1; i <= 5; i++ {
-			resp, err := client.Get(url + `?page=` + strconv.Itoa(curr_page_count))
-			if err != nil {
-				continue
-			}
-			defer resp.Body.Close()
-			body, err := ioutil.ReadAll(resp.Body)
-			CheckErr(err)
-			err = json.Unmarshal(body, &eveorder)
-			CheckErr(err)
-			StoreEveOrders(db, eveorder.Items, region_id)
-			curr_page_count += 1
-		}
 	}
 }
 
