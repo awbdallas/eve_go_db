@@ -4,5 +4,6 @@ More error handling.
 SECURITY ISSUES
 
 FEATURES
-Switch to ESI endpoints for data. 
 Pulling a station list in the future when citadels are able to be queried
+Pulling an asset list for a characters
+

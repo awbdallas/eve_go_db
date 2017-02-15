@@ -16,13 +16,19 @@ import (
 var ITEM_FILE_PATH = `/var/tmp/eve_db_data/types.json`
 var STATION_FILE_PATH = `/var/tmp/eve_db_data/station_types.json`
 
+// var REGIONS_TO_WATCH = `/var/tmp/eve_db_data/regions_to_watch`
+
 type EveHistoryItem struct {
-	OrderCount int     `json:"orderCount"`
-	LowPrice   float64 `json:"lowPrice"`
-	HighPrice  float64 `json:"highPrice"`
-	AvgPrice   float64 `json:"AvgPrice"`
+	OrderCount int     `json:"order_count"`
+	LowPrice   float64 `json:"lowest"`
+	HighPrice  float64 `json:"highest"`
+	AvgPrice   float64 `json:"average"`
 	Volume     int     `json:"volume"`
 	Date       string  `json:"date"`
+}
+
+type EveHistoryRequest struct {
+	Items []EveHistoryItem
 }
 
 type HistoryRequest struct {
@@ -31,10 +37,6 @@ type HistoryRequest struct {
 	TypeID   int
 	success  bool
 	result   EveHistoryRequest
-}
-
-type EveHistoryRequest struct {
-	Items []EveHistoryItem `json:"items"`
 }
 
 type EveItem struct {
@@ -53,20 +55,18 @@ type StationType struct {
 }
 
 type EveOrder struct {
-	Buy       bool    `json:"buy"`
+	Buy       bool    `json:"is_buy_order"`
 	Issued    string  `json:"issued"`
 	Price     float64 `json:"price"`
-	Volume    int     `json:"volume"`
+	Volume    int     `json:"volume_remain"`
 	Range     string  `json:"range"`
-	StationID int     `json:"stationID"`
+	StationID int     `json:"location_id"`
 	TypeID    int     `json:"type"`
-	Duration  int     `json:"Duration"`
+	Duration  int     `json:"duration"`
 }
 
 type EveOrderRequest struct {
-	Items      []EveOrder `json:"items"`
-	TotalCount int        `json:"totalCount"`
-	PageCount  int        `json:"pageCount"`
+	Items []EveOrder
 }
 
 func main() {
@@ -119,9 +119,8 @@ func GetAllRegions(db *sql.DB) []int {
 
 func PopulateOrdersTable(db *sql.DB, region_id int) {
 	var eveorder EveOrderRequest
-	url := `https://crest-tq.eveonline.com/market/` + strconv.Itoa(region_id) + `/orders/all/`
+	base_url := `https://esi.tech.ccp.is/latest/markets/` + strconv.Itoa(region_id) + `/orders/?order_type=all&`
 	curr_page_count := 1
-	total_page_count := 1
 
 	ClearOrdersTable(db, region_id)
 
@@ -130,15 +129,13 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 		Timeout: timeout,
 	}
 
-	for curr_page_count <= total_page_count {
-		if curr_page_count != 1 {
-			url = url + `?page=` + strconv.Itoa(curr_page_count)
-		}
+	for {
+		holding_url := base_url + `page=` + strconv.Itoa(curr_page_count) + `&datasource=tranquility`
+		resp, err := client.Get(holding_url)
 
-		resp, err := client.Get(url)
-		if err != nil {
+		if err != nil || resp.StatusCode != 200 {
 			for i := 1; i <= 5; i++ {
-				resp, err = client.Get(url)
+				resp, err = client.Get(holding_url)
 				if err != nil {
 					if i == 5 {
 						return
@@ -149,13 +146,15 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 			}
 		}
 		defer resp.Body.Close()
-
 		body, err := ioutil.ReadAll(resp.Body)
-		err = json.Unmarshal(body, &eveorder)
+		if string(body) == `[]` {
+			break
+		}
+		err = json.Unmarshal(body, &eveorder.Items)
 		CheckErr(err)
-		total_page_count = eveorder.PageCount
 		StoreEveOrders(db, eveorder.Items, region_id)
 		curr_page_count += 1
+
 	}
 }
 
@@ -166,15 +165,14 @@ func ClearOrdersTable(db *sql.DB, region_id int) {
 
 func PopulateHistoryTable(db *sql.DB, region_id int) {
 	market_items := GetMarketItems(db)
-	endpoint := `https://crest-tq.eveonline.com`
+	endpoint := `https://esi.tech.ccp.is/latest/markets/`
 
 	requests := make([]HistoryRequest, len(market_items))
 
 	for index, item := range market_items {
 		var request HistoryRequest
-		request.url = (endpoint + `/market/` + strconv.Itoa(region_id) +
-			`/history/?type=` + endpoint + `/inventory/types/` +
-			strconv.Itoa(item) + `/`)
+		request.url = (endpoint + strconv.Itoa(region_id) + `/history/?type_id=` +
+			strconv.Itoa(item) + `&datasource=tranquility`)
 		request.RegionID = region_id
 		request.TypeID = item
 		requests[index] = request
@@ -201,6 +199,10 @@ func PopulateHistoryTable(db *sql.DB, region_id int) {
 	}
 }
 
+//func ReliableGet()
+// Need to do this at some point for trying to have like a reliable get or something in order
+// To deal with all the other errors I'm having and stuff
+
 /*
 * Grabbed from: https://gobyexample.com/worker-pools
  */
@@ -213,14 +215,14 @@ func HistoryWorker(id int, jobs <-chan HistoryRequest, results chan<- HistoryReq
 func ItemHistoryRequest(request HistoryRequest) HistoryRequest {
 	for i := 1; i <= 5; i++ {
 		resp, err := http.Get(request.url)
-		if err != nil {
+		if err != nil || resp.StatusCode != 200 {
 			continue
 		}
 		request.success = true
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
 		CheckErr(err)
-		err = json.Unmarshal(body, &request.result)
+		err = json.Unmarshal(body, &request.result.Items)
 		CheckErr(err)
 		return request
 	}
