@@ -61,7 +61,7 @@ type EveOrder struct {
 	Volume    int     `json:"volume_remain"`
 	Range     string  `json:"range"`
 	StationID int     `json:"location_id"`
-	TypeID    int     `json:"type"`
+	TypeID    int     `json:"type_id"`
 	Duration  int     `json:"duration"`
 }
 
