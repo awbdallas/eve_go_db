@@ -50,6 +50,28 @@ do
       echo "Script Starting" >> $LOG_FILE
       $GOBIN/eve >> $LOG_FILE 2>&1 &
       ;;
+    --setup)
+      echo -n "What will the DBNAME be? : "
+      read dbname
+      echo -n "What will the User be? : "
+      read username
+      echo "What will the user password be? :"
+      read userpasswd
+      # Environment variables
+      echo "export POSTGRES_DBNAME=$dbname" >> ~/.zshenv
+      echo "export POSTGRES_USER=$username" >> ~/.zshenv
+      # You should probs change that if you're using this. 
+      echo "export POSTGRES_PASSWORD=$userpasswd" >> ~/.zshenv
+
+      # SETUP POSTGRES
+      sudo -H -u postgres bash -c "psql -c \"CREATE USER $username with password '$userpasswd';\""
+      sudo -H -u postgres bash -c "psql -c \"CREATE DATABASE $dbname;\""
+      sudo -H -u postgres bash -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE $dbname to $username;\""
+      
+      # Linking files (assuming running from current directory)
+      ln -s $PWD/data /var/tmp/eve_db_data
+      go install $PWD/eve.go
+      ;;
   esac
   shift
 done
