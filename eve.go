@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,8 +16,9 @@ import (
 
 var ITEM_FILE_PATH = `/var/tmp/eve_db_data/types.json`
 var STATION_FILE_PATH = `/var/tmp/eve_db_data/station_types.json`
+var REGIONS_TO_WATCH = `/var/tmp/eve_db_data/regions_to_watch`
 
-// var REGIONS_TO_WATCH = `/var/tmp/eve_db_data/regions_to_watch`
+// Var ERROR_LOG = `/var/tmp/eve_db_data/error.log`
 
 type EveHistoryItem struct {
 	OrderCount int     `json:"order_count"`
@@ -78,13 +80,7 @@ func main() {
 	CreateDB(db)
 	PopulateItemTable(db)
 	PopulateStationTable(db)
-	regions := []int{
-		10000043, // Amarr
-		10000002, // Jita
-		10000030, // Rens
-		10000042, // Hek
-		10000039, // Esoteria
-	}
+	regions := GetRegionsFromFile()
 
 	for {
 		for _, region := range regions {
@@ -94,6 +90,20 @@ func main() {
 		}
 		time.Sleep(3 * time.Hour)
 	}
+}
+
+func GetRegionsFromFile() []int {
+	fh, _ := os.Open(REGIONS_TO_WATCH)
+	scanner := bufio.NewScanner(fh)
+	var regionids []int
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		region, _ := strconv.Atoi(line)
+		regionids = append(regionids, region)
+	}
+
+	return regionids
 }
 
 func GetAllRegions(db *sql.DB) []int {
@@ -121,7 +131,6 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 	var eveorder EveOrderRequest
 	base_url := `https://esi.tech.ccp.is/latest/markets/` + strconv.Itoa(region_id) + `/orders/?order_type=all&`
 	curr_page_count := 1
-
 	ClearOrdersTable(db, region_id)
 
 	timeout := time.Duration(30 * time.Second)
@@ -151,7 +160,9 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 			break
 		}
 		err = json.Unmarshal(body, &eveorder.Items)
-		CheckErr(err)
+		if err != nil {
+			continue
+		}
 		StoreEveOrders(db, eveorder.Items, region_id)
 		curr_page_count += 1
 
@@ -223,7 +234,9 @@ func ItemHistoryRequest(request HistoryRequest) HistoryRequest {
 		body, err := ioutil.ReadAll(resp.Body)
 		CheckErr(err)
 		err = json.Unmarshal(body, &request.result.Items)
-		CheckErr(err)
+		if err != nil {
+			continue
+		}
 		return request
 	}
 
