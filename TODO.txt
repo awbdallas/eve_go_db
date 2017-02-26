@@ -6,4 +6,3 @@ SECURITY ISSUES
 FEATURES
 Pulling a station list in the future when citadels are able to be queried
 Pulling an asset list for a characters
-Ability to add regions as needed

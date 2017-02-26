@@ -1,6 +1,6 @@
 #!/usr/bin/zsh
 
-[ $# -lt 1 ] && echo "--stop --start --restart" && exit 1 
+[ $# -lt 1 ] && echo "--stop --start --restart --setup --addregion" && exit 1 
 PID_FILE=/tmp/eve_db.pid
 PROGRAM_FILE=$GOPATH/src/github.com/awbdallas/go_eve_db/eve.go
 PROGRAM=$GOBIN/eve
@@ -58,10 +58,11 @@ do
       echo "What will the user password be? :"
       read userpasswd
       # Environment variables
-      echo "export POSTGRES_DBNAME=$dbname" >> ~/.zshenv
-      echo "export POSTGRES_USER=$username" >> ~/.zshenv
+      echo "export PGDATABASE=$dbname" >> ~/.zshenv
+      echo "export PGUSER=$username" >> ~/.zshenv
       # You should probs change that if you're using this. 
-      echo "export POSTGRES_PASSWORD=$userpasswd" >> ~/.zshenv
+      echo "export PGPASSWORD=$userpasswd" >> ~/.zshenv
+
 
       # SETUP POSTGRES
       sudo -H -u postgres bash -c "psql -c \"CREATE USER $username with password '$userpasswd';\""
@@ -70,8 +71,25 @@ do
       
       # Linking files (assuming running from current directory)
       ln -s $PWD/data /var/tmp/eve_db_data
+      
+      # Starting Region is Jita
+      echo "10000002" >> /var/tmp/eve_db_data/regions_to_watch
       go install $PWD/eve.go
       ;;
+    --addregion)
+      echo -n "Name of System (expands to region) to add? : "
+      read region
+
+      result=$(psql -h localhost -t -c "SELECT regionid FROM stations WHERE stationname LIKE '$region%' limit 1")
+
+      if [[ -n $result ]]; then
+        echo "Resulting Region: $result"
+        echo "$result" | sed 's/ //g' >> /var/tmp/eve_db_data/regions_to_watch 
+      else
+        echo "Unable to find result for $region. Please try another name"
+      fi
+
+
   esac
   shift
 done
