@@ -93,6 +93,7 @@ func main() {
 }
 
 func GetRegionsFromFile() []int {
+	// Regions are line seperated and 8 digit numbers
 	fh, _ := os.Open(REGIONS_TO_WATCH)
 	scanner := bufio.NewScanner(fh)
 	var regionids []int
@@ -107,6 +108,8 @@ func GetRegionsFromFile() []int {
 }
 
 func GetAllRegions(db *sql.DB) []int {
+	// Need all of the regions that have a station in them
+	// TODO: Probably need a table for just systems instead of just stations
 	var regionids []int
 
 	all_region_sql := `
@@ -127,34 +130,69 @@ func GetAllRegions(db *sql.DB) []int {
 
 }
 
+func ClearOrdersTable(db *sql.DB, region_id int) {
+	/*
+	 * I only want current orders. I don't care about what they're currently at
+	 * since I can get any info I want from the history. So, delete all orders and then
+	 * Repopulate is the idea here
+	 */
+	_, err := db.Exec("DELETE FROM  market_orders WHERE regionid = $1", region_id)
+	CheckErr(err)
+}
+
+func PopulateHistoryTable(db *sql.DB, region_id int) {
+	market_items := GetMarketItems(db)
+	endpoint := `https://esi.tech.ccp.is/latest/markets/`
+
+	requests := make([]HistoryRequest, len(market_items))
+
+	// Loading struct with url
+	for index, item := range market_items {
+		var request HistoryRequest
+		request.url = (endpoint + strconv.Itoa(region_id) + `/history/?type_id=` +
+			strconv.Itoa(item) + `&datasource=tranquility`)
+		request.RegionID = region_id
+		request.TypeID = item
+		requests[index] = request
+	}
+
+	// Need the channels for jobs and what's returned
+	jobs := make(chan HistoryRequest, len(market_items))
+	results := make(chan HistoryRequest, len(market_items))
+	// Giving the workers a struct and then we're just going to have them populate it
+	for w := 1; w <= 25; w++ {
+		go HistoryWorker(w, jobs, results)
+	}
+
+	for _, request := range requests {
+		jobs <- request
+	}
+	close(jobs)
+
+	// we only care about requests that were successful, if so we pass them to history
+	for i := 1; i <= len(market_items); i++ {
+		request := <-results
+		if request.success == true {
+			StoreEveItemHistory(db, request.result.Items, request.TypeID,
+				request.RegionID)
+		}
+	}
+}
+
 func PopulateOrdersTable(db *sql.DB, region_id int) {
 	var eveorder EveOrderRequest
 	base_url := `https://esi.tech.ccp.is/latest/markets/` + strconv.Itoa(region_id) + `/orders/?order_type=all&`
 	curr_page_count := 1
 	ClearOrdersTable(db, region_id)
 
-	timeout := time.Duration(30 * time.Second)
-	client := http.Client{
-		Timeout: timeout,
-	}
-
 	for {
 		holding_url := base_url + `page=` + strconv.Itoa(curr_page_count) + `&datasource=tranquility`
-		resp, err := client.Get(holding_url)
-
-		if err != nil || resp.StatusCode != 200 {
-			for i := 1; i <= 5; i++ {
-				resp, err = client.Get(holding_url)
-				if err != nil {
-					if i == 5 {
-						return
-					} else {
-						continue
-					}
-				}
-			}
+		resp := ReliableGet(holding_url, 5)
+		if resp == nil {
+			continue
 		}
 		defer resp.Body.Close()
+
 		body, err := ioutil.ReadAll(resp.Body)
 		if string(body) == `[]` {
 			break
@@ -169,50 +207,25 @@ func PopulateOrdersTable(db *sql.DB, region_id int) {
 	}
 }
 
-func ClearOrdersTable(db *sql.DB, region_id int) {
-	_, err := db.Exec("DELETE FROM  market_orders WHERE regionid = $1", region_id)
-	CheckErr(err)
-}
+func ReliableGet(url string, tries int) *http.Response {
+	timeout := time.Duration(30 * time.Second)
 
-func PopulateHistoryTable(db *sql.DB, region_id int) {
-	market_items := GetMarketItems(db)
-	endpoint := `https://esi.tech.ccp.is/latest/markets/`
-
-	requests := make([]HistoryRequest, len(market_items))
-
-	for index, item := range market_items {
-		var request HistoryRequest
-		request.url = (endpoint + strconv.Itoa(region_id) + `/history/?type_id=` +
-			strconv.Itoa(item) + `&datasource=tranquility`)
-		request.RegionID = region_id
-		request.TypeID = item
-		requests[index] = request
+	client := http.Client{
+		Timeout: timeout,
 	}
 
-	jobs := make(chan HistoryRequest, len(market_items))
-	results := make(chan HistoryRequest, len(market_items))
+	for i := 0; i < tries; i++ {
+		resp, err := client.Get(url)
 
-	for w := 1; w <= 25; w++ {
-		go HistoryWorker(w, jobs, results)
-	}
-
-	for _, request := range requests {
-		jobs <- request
-	}
-	close(jobs)
-
-	for i := 1; i <= len(market_items); i++ {
-		request := <-results
-		if request.success == true {
-			StoreEveItemHistory(db, request.result.Items, request.TypeID,
-				request.RegionID)
+		if err != nil || resp.StatusCode != 200 {
+			continue
+		} else {
+			return resp
 		}
 	}
-}
 
-//func ReliableGet()
-// Need to do this at some point for trying to have like a reliable get or something in order
-// To deal with all the other errors I'm having and stuff
+	return nil
+}
 
 /*
 * Grabbed from: https://gobyexample.com/worker-pools
@@ -224,23 +237,25 @@ func HistoryWorker(id int, jobs <-chan HistoryRequest, results chan<- HistoryReq
 }
 
 func ItemHistoryRequest(request HistoryRequest) HistoryRequest {
-	for i := 1; i <= 5; i++ {
-		resp, err := http.Get(request.url)
-		if err != nil || resp.StatusCode != 200 {
-			continue
-		}
-		request.success = true
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-		CheckErr(err)
-		err = json.Unmarshal(body, &request.result.Items)
-		if err != nil {
-			continue
-		}
+	resp := ReliableGet(request.url, 5)
+	if resp == nil {
+		request.success = false
 		return request
 	}
+	defer resp.Body.Close()
 
-	request.success = false
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		request.success = false
+		return request
+	}
+	err = json.Unmarshal(body, &request.result.Items)
+	if err != nil {
+		request.success = false
+		return request
+	}
+	request.success = true
+
 	return request
 
 }
@@ -345,9 +360,9 @@ func GetMarketItems(db *sql.DB) []int {
 }
 
 func InitDB() *sql.DB {
-	user := os.Getenv("POSTGRES_USER")
-	db_name := os.Getenv("POSTGRES_DBNAME")
-	passwd := os.Getenv("POSTGRES_PASSWORD")
+	user := os.Getenv("PGUSER")
+	db_name := os.Getenv("PGDATABASE")
+	passwd := os.Getenv("PGPASSWORD")
 
 	db, err := sql.Open("postgres", fmt.Sprintf("user=%s dbname=%s password=%s",
 		user, db_name, passwd))
@@ -488,6 +503,7 @@ func PopulateStationTable(db *sql.DB) {
 }
 
 func CheckErr(err error) {
+	// TODO deal with errors better. This is awful. Program needs to run all the time
 	if err != nil {
 		panic(err)
 	}
